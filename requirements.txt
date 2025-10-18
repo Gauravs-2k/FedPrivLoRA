@@ -1,0 +1,13 @@
+flwr
+
+torch
+
+torchvision
+
+numpy
+
+transformers>=4.37.0
+
+peft
+
+accelerate
