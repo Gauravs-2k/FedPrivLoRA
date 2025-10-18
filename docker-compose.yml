@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  inference:
+    build: .
+    image: dml-project-inference:latest
+    ports:
+      - "8501:8501"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ./app/lora/qwen_lora:/app/app/lora/qwen_lora
+      - ./huggingface-cache:/app/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

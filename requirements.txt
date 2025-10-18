@@ -11,3 +11,9 @@ transformers>=4.37.0
 peft
 
 accelerate
+
+fastapi
+
+uvicorn
+
+streamlit
