@@ -31,8 +31,8 @@ def parse_dtype(value: str):
 
 
 SERVER_DEFAULTS = {
-    "base_model": "Qwen/Qwen1.5-1.8B",
-    "peft_dir": "qwen_lora",
+    "base_model": "Qwen/Qwen1.5-1.8B-Chat",
+    "peft_dir": "app/lora/qwen_lora",
     "dtype": "auto",
     "device_map": "auto",
     "max_new_tokens": 128,
@@ -253,7 +253,7 @@ def chat_completions_endpoint(req: ChatCompletionRequest):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-model", default="Qwen/Qwen1.5-1.8B")
+    parser.add_argument("--base-model", default="Qwen/Qwen1.5-1.8B-Chat")
     parser.add_argument("--peft-dir", default="qwen_lora")
     parser.add_argument("--prompt", default="Hello, how are you?")
     parser.add_argument("--max-new-tokens", type=int, default=128)

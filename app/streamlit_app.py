@@ -9,7 +9,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.append(str(CURRENT_DIR))
 
-from lora_inference import (
+from model.inference import (
     SERVER_DEFAULTS,
     ChatMessage,
     _conversation_to_prompt,
