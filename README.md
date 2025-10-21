@@ -63,7 +63,7 @@ With the virtual environment activated:
 
 ```bash
 pip install -r requirements.txt
-python app/lora/lora_inference.py --serve --host 0.0.0.0 --port 8000
+python app/model/inference.py --serve --host 0.0.0.0 --port 8000
 ```
 
 REST endpoints (rooted at `http://localhost:8000`):
@@ -113,7 +113,43 @@ docker compose down
 Launch an interactive UI with:
 
 ```bash
-streamlit run app/lora/streamlit_app.py
+streamlit run app/streamlit_app.py
 ```
 
 The UI exposes model and adapter configuration fields, sampling controls, and displays token usage for each generation. The Docker Compose setup above provides the same UI inside a container.
+
+### Synthetic Instruction Datasets
+
+Generate department contexts and Bonito-based Q&A datasets for FedPrivLoRA:
+
+```bash
+python app/dataset/generate_datasets.py --context-dir app/dataset --output-dir app/dataset --samples 1000
+```
+
+Each department JSONL file is written as `DEPT_dept.jsonl`, includes the specified number of pairs, and prints sample outputs plus training commands.
+
+## LoRA Training
+
+Run supervised fine-tuning with LoRA adapters using the training script:
+
+```bash
+python app/lora/train.py \
+	--base-model Qwen/Qwen1.5-1.8B-Chat \
+	--dataset tatsu-lab/alpaca \
+	--text-field text \
+	--response-field output \
+	--prompt-template "{instruction}\n{input}" \
+	--response-separator "\n### Response:\n" \
+	--peft-output-dir qwen_lora_alpaca
+```
+
+Key options:
+
+- `--base-model`: any HF causal LM.
+- `--dataset` and `--dataset-config`: Hugging Face dataset identifiers.
+- `--text-field` and `--response-field`: dataset columns combined into the training prompt.
+- `--prompt-template`: Python format string applied to each example; the default expects a `text` column.
+- LoRA knobs (`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`) mirror `LoraConfig` settings.
+- Training hyperparameters (`--per-device-train-batch-size`, `--num-train-epochs`, `--learning-rate`, etc.) map directly to `transformers.TrainingArguments`.
+
+The script writes adapters and tokenizer artifacts to `--peft-output-dir`. Supply that directory to the inference components once training completes.

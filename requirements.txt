@@ -17,3 +17,9 @@ fastapi
 uvicorn
 
 streamlit
+
+datasets
+
+distilabel
+
+python-dotenv
