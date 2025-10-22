@@ -78,7 +78,7 @@ class GenerationResult:
 app = FastAPI()
 
 
-def _load_model(base_model: str, peft_dir: str, dtype: str, device_map: str):
+def _load_model(base_model: str, peft_dir: str, dtype: str, device_map: str, tokenizer=None):
     hf_token = os.environ.get("HF_TOKEN")
     parsed_dtype = parse_dtype(dtype)
     base_kwargs = {"trust_remote_code": True}
@@ -89,14 +89,24 @@ def _load_model(base_model: str, peft_dir: str, dtype: str, device_map: str):
     if hf_token:
         base_kwargs["token"] = hf_token
     base_model_instance = AutoModelForCausalLM.from_pretrained(base_model, **base_kwargs)
+
     peft_config_path = os.path.join(peft_dir, "adapter_config.json")
     use_peft = bool(peft_dir) and os.path.isdir(peft_dir) and os.path.exists(peft_config_path)
     model = base_model_instance
+
     if use_peft:
+        # Use provided tokenizer or load one
+        if tokenizer is None:
+            tokenizer = _load_tokenizer(base_model, peft_dir)
+        # Resize model embeddings to match tokenizer if needed
+        model.resize_token_embeddings(len(tokenizer))
+
         try:
             model = PeftModel.from_pretrained(base_model_instance, peft_dir)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            print(f"Warning: Failed to load PeftModel: {e}. Using base model only.")
             model = base_model_instance
+
     model.eval()
     return model
 
@@ -119,8 +129,13 @@ def _cache_key(base_model: str, peft_dir: str, dtype: str, device_map: str):
 def _get_model_and_tokenizer(base_model: str, peft_dir: str, dtype: str, device_map: str):
     key = _cache_key(base_model, peft_dir, dtype, device_map)
     if key not in _MODEL_CACHE:
-        _MODEL_CACHE[key] = _load_model(base_model, peft_dir, dtype, device_map)
-        _TOKENIZER_CACHE[key] = _load_tokenizer(base_model, peft_dir)
+        # Load tokenizer first
+        tokenizer = _load_tokenizer(base_model, peft_dir)
+        _TOKENIZER_CACHE[key] = tokenizer
+
+        # Load model and resize if needed for PeftModel
+        model = _load_model(base_model, peft_dir, dtype, device_map, tokenizer)
+        _MODEL_CACHE[key] = model
     return _MODEL_CACHE[key], _TOKENIZER_CACHE[key]
 
 

@@ -116,7 +116,23 @@ Launch an interactive UI with:
 streamlit run app/streamlit_app.py
 ```
 
-The UI exposes model and adapter configuration fields, sampling controls, and displays token usage for each generation. The Docker Compose setup above provides the same UI inside a container.
+**Model Selection Options:**
+
+1. **Interactive Dropdown**: Use the sidebar dropdown to switch between available department models (Finance, IT Support, etc.)
+
+2. **Command Line Selection**: Specify a model when launching:
+```bash
+streamlit run app/streamlit_app.py -- --model finance
+streamlit run app/streamlit_app.py -- --model it_support
+```
+
+**Available Models:**
+- ✅ **Finance Department** (`qwen_dept_lora_finance`) - **Fully trained and tested**
+- ✅ **IT Support Department** (`qwen_dept_lora_it_support`) - **Fully trained**
+- ✅ **HR Department** (`qwen_dept_lora_hr`) - **Fully trained**
+- ✅ **Engineering Department** (`qwen_dept_lora_engineering`) - **Fully trained**
+
+*All department models are now trained and ready for inference!*
 
 ### Synthetic Instruction Datasets
 
@@ -130,26 +146,73 @@ Each department JSONL file is written as `DEPT_dept.jsonl`, includes the specifi
 
 ## LoRA Training
 
-Run supervised fine-tuning with LoRA adapters using the training script:
-
+**Quick Start:** Train all department models automatically:
 ```bash
-python app/lora/train.py \
-	--base-model Qwen/Qwen1.5-1.8B-Chat \
-	--dataset tatsu-lab/alpaca \
-	--text-field text \
-	--response-field output \
-	--prompt-template "{instruction}\n{input}" \
-	--response-separator "\n### Response:\n" \
-	--peft-output-dir qwen_lora_alpaca
+python app/lora/lora.py
+
+python app/lora/lora.py --dataset app/dataset/dept/IT_SUPPORT_dept.jsonl --peft-output-dir qwen_dept_lora_it_support
+
 ```
 
+### Automatic Training for All Departments
+
+Train separate LoRA models for all departments automatically with hardcoded parameters:
+
+```bash
+python app/lora/lora.py
+```
+
+This will automatically:
+- Use Qwen/Qwen1.5-1.8B-Chat as the base model
+- Detect all department files (`*_dept.jsonl`) in `app/dataset/dept`
+- Train separate LoRA models for each department with optimized settings
+- Save models as `qwen_dept_lora_hr`, `qwen_dept_lora_finance`, etc.
+
+**Training Configuration (hardcoded):**
+- Base Model: Qwen/Qwen1.5-1.8B-Chat
+- Dataset: app/dataset/dept (auto-detects all department files)
+- Training: 1 epoch, batch size 1, gradient accumulation 8
+- LoRA: rank 8, alpha 16, max length 256
+- Optimization: FP16, gradient checkpointing enabled
+
+### Custom Training (Advanced)
+
+For custom training parameters, you can still modify the script directly or use the original argument-based approach by editing the hardcoded values in `app/lora/lora.py`.
+
+### Train Combined Model (All Departments)
+
+For training a combined model across all departments (legacy approach):
+
+```bash
+python app/lora/train_combined.py  # Use separate script for combined training
+```
+
+**Note:** The main training script now automatically trains separate department models. Use the command above for combined training if needed.
+
+### GPU Memory Management
+
+If you encounter CUDA out of memory errors, use the GPU memory clearing utility:
+
+```bash
+# Quick memory clear (recommended)
+python app/model/clear_gpu.py --mode quick
+```
+
+**Memory Optimization Tips:**
+- Call `clear_gpu_memory()` between model inferences
+- Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to reduce fragmentation
+- Use smaller batch sizes if memory is limited
+- Restart Python process if memory fragmentation becomes severe
+
+### Training Parameters
+
 Key options:
+- `--base-model`: any HF causal LM (Qwen/Qwen1.5-1.8B-Chat)
+- `--dataset`: path to JSONL file or HF dataset
+- `--text-field` and `--response-field`: dataset columns
+- `--peft-output-dir`: where to save LoRA adapters
+- `--lora-r`: LoRA rank (8-16 recommended)
+- `--lora-alpha`: LoRA scaling (16-32 recommended)
+- Training: `--num-train-epochs`, `--learning-rate`, `--max-length`
 
-- `--base-model`: any HF causal LM.
-- `--dataset` and `--dataset-config`: Hugging Face dataset identifiers.
-- `--text-field` and `--response-field`: dataset columns combined into the training prompt.
-- `--prompt-template`: Python format string applied to each example; the default expects a `text` column.
-- LoRA knobs (`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`) mirror `LoraConfig` settings.
-- Training hyperparameters (`--per-device-train-batch-size`, `--num-train-epochs`, `--learning-rate`, etc.) map directly to `transformers.TrainingArguments`.
-
-The script writes adapters and tokenizer artifacts to `--peft-output-dir`. Supply that directory to the inference components once training completes.
+The script saves adapters and tokenizer to `--peft-output-dir`.

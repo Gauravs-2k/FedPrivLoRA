@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import argparse
 
 import streamlit as st
 import torch
@@ -30,7 +31,31 @@ def _resolve_defaults():
     }
 
 
+def _get_available_models():
+    """Get list of available department LoRA models"""
+    import os
+    models = []
+    for item in os.listdir('.'):
+        if item.startswith('qwen_dept_lora_') and os.path.isdir(item):
+            dept_name = item.replace('qwen_dept_lora_', '').replace('_', ' ').title()
+            models.append((item, f"{dept_name} Department"))
+    return models
+
+
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", help="Department model to use (e.g., finance, hr, engineering, it_support)")
+    args, unknown = parser.parse_known_args()
+    
+    # Update SERVER_DEFAULTS if model specified via command line
+    if args.model:
+        model_dir = f"qwen_dept_lora_{args.model.lower()}"
+        if os.path.isdir(model_dir):
+            SERVER_DEFAULTS["peft_dir"] = model_dir
+        else:
+            print(f"Warning: Model directory '{model_dir}' not found. Using default.")
+
     st.set_page_config(page_title="LoRA Chat", layout="wide")
     st.title("LoRA Chat")
 
@@ -45,12 +70,41 @@ def main():
 
     defaults = _resolve_defaults()
 
+    # Model selection in sidebar
+    available_models = _get_available_models()
+    if available_models:
+        model_options = [model[1] for model in available_models]
+        model_dirs = [model[0] for model in available_models]
+        default_idx = 0
+        for i, (dir_name, display_name) in enumerate(available_models):
+            if dir_name == defaults["peft_dir"]:
+                default_idx = i
+                break
+        
+        selected_model_display = st.sidebar.selectbox(
+            "Select Department Model",
+            model_options,
+            index=default_idx,
+            help="Choose which department-specific LoRA model to use for responses"
+        )
+        
+        # Find the corresponding directory
+        selected_idx = model_options.index(selected_model_display)
+        selected_peft_dir = model_dirs[selected_idx]
+        
+        # Update defaults with selected model
+        defaults["peft_dir"] = selected_peft_dir
+        st.sidebar.success(f"Using: {selected_model_display}")
+    else:
+        st.sidebar.warning("No department models found. Using default model.")
+
     # Initialize session state for conversation
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Load model once
-    if "model_loaded" not in st.session_state:
+    # Load model once (or reload if model changed)
+    model_key = f"{defaults['peft_dir']}_{defaults['base_model']}"
+    if "current_model" not in st.session_state or st.session_state.current_model != model_key:
         try:
             _get_model_and_tokenizer(
                 defaults["base_model"],
@@ -58,7 +112,10 @@ def main():
                 defaults["dtype"],
                 defaults["device_map"]
             )
+            st.session_state.current_model = model_key
             st.session_state.model_loaded = True
+            # Clear conversation when switching models
+            st.session_state.messages = []
         except Exception as exc:
             st.error(f"Failed to load model: {exc}")
             return

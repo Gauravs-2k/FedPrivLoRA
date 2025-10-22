@@ -2,7 +2,6 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Optional
-
 import torch
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
@@ -13,7 +12,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
@@ -55,45 +53,127 @@ def _tokenize_dataset(dataset, tokenizer, text_field, template, response_field, 
 
 
 def main():
+    # Hardcoded training parameters
+    base_model = "Qwen/Qwen1.5-1.8B-Chat"
+    dataset_path = "app/dataset/dept"
+    text_field = "text"
+    response_field = "response"
+    response_separator = "\n### Response:\n"
+    peft_output_dir = "qwen_dept_lora"
+    num_train_epochs = 1
+    per_device_train_batch_size = 1
+    gradient_accumulation_steps = 8
+    learning_rate = 2e-4
+    lora_r = 8
+    lora_alpha = 16
+    max_length = 256
+    gradient_checkpointing = True
+    fp16 = True
+    
+    # Optional parameters (can be modified if needed)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-model", required=True)
-    parser.add_argument("--peft-output-dir", default="lora-output")
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--dataset-config")
-    parser.add_argument("--train-split", default="train")
-    parser.add_argument("--eval-split")
-    parser.add_argument("--text-field", default="text")
-    parser.add_argument("--response-field")
-    parser.add_argument("--prompt-template", default="{text}")
-    parser.add_argument("--response-separator", default="\n")
-    parser.add_argument("--max-length", type=int, default=1024)
-    parser.add_argument("--per-device-train-batch-size", type=int, default=1)
-    parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
-    parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--num-train-epochs", type=float, default=3.0)
-    parser.add_argument("--warmup-steps", type=int, default=100)
-    parser.add_argument("--logging-steps", type=int, default=10)
-    parser.add_argument("--save-steps", type=int, default=500)
-    parser.add_argument("--eval-steps", type=int, default=500)
-    parser.add_argument("--evaluation-strategy", default="no")
-    parser.add_argument("--lora-r", type=int, default=8)
-    parser.add_argument("--lora-alpha", type=int, default=32)
-    parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--lora-bias", choices=["none", "all", "lora_only"], default="none")
-    parser.add_argument("--lora-target-modules")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--dtype", default="auto")
-    parser.add_argument("--fp16", action="store_true")
-    parser.add_argument("--bf16", action="store_true")
-    parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--lora-target-modules")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-train-samples", type=int)
-    parser.add_argument("--max-eval-samples", type=int)
     parser.add_argument("--num-proc", type=int)
+    # Allow overriding dataset and output dir for testing individual departments
+    parser.add_argument("--dataset", help="Override dataset path")
+    parser.add_argument("--peft-output-dir", help="Override output directory")
     args = parser.parse_args()
 
+    # Create args object with hardcoded values
+    class Args:
+        def __init__(self):
+            self.base_model = base_model
+            self.dataset = args.dataset or dataset_path  # Allow override
+            self.text_field = text_field
+            self.response_field = response_field
+            self.prompt_template = "{text}"
+            self.response_separator = response_separator
+            self.peft_output_dir = args.peft_output_dir or peft_output_dir  # Allow override
+            self.train_split = "train"
+            self.eval_split = None
+            self.max_length = max_length
+            self.per_device_train_batch_size = per_device_train_batch_size
+            self.per_device_eval_batch_size = 1
+            self.gradient_accumulation_steps = gradient_accumulation_steps
+            self.learning_rate = learning_rate
+            self.weight_decay = 0.0
+            self.num_train_epochs = num_train_epochs
+            self.warmup_steps = 100
+            self.logging_steps = 10
+            self.save_steps = 500
+            self.eval_steps = 500
+            self.evaluation_strategy = "no"
+            self.lora_r = lora_r
+            self.lora_alpha = lora_alpha
+            self.lora_dropout = 0.05
+            self.lora_bias = "none"
+            self.lora_target_modules = args.lora_target_modules
+            self.device_map = args.device_map
+            self.dtype = args.dtype
+            self.fp16 = fp16
+            self.bf16 = False
+            self.gradient_checkpointing = gradient_checkpointing
+            self.seed = args.seed
+            self.max_train_samples = args.max_train_samples
+            self.max_eval_samples = None
+            self.num_proc = args.num_proc
+            self.dataset_config = None
+
+    args = Args()
+
+    # Check if dataset is a directory with department files
+    dataset_path = Path(args.dataset)
+    if dataset_path.is_dir():
+        # Find all department JSONL files
+        dept_files = list(dataset_path.glob("*_dept.jsonl"))
+        if not dept_files:
+            raise ValueError(f"No department files found in {dataset_path}")
+        
+        print(f"Found {len(dept_files)} department files:")
+        for f in dept_files:
+            print(f"  - {f.name}")
+        
+        # Train each department separately
+        for dept_file in dept_files:
+            dept_name = dept_file.stem.replace("_dept", "").lower()
+            dept_output_dir = f"{args.peft_output_dir}_{dept_name}"
+            
+            print(f"\n{'='*50}")
+            print(f"Training LoRA for {dept_name.upper()} department")
+            print(f"Dataset: {dept_file}")
+            print(f"Output: {dept_output_dir}")
+            print(f"{'='*50}")
+            
+            # Clear any cached models and GPU memory before training
+            import gc
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Train this department
+            train_single_department(
+                dept_file, 
+                dept_output_dir, 
+                args
+            )
+        
+        print(f"\n{'='*50}")
+        print("All department LoRA models trained successfully!")
+        print(f"Models saved in {args.peft_output_dir}_<department>")
+        print(f"{'='*50}")
+        return
+    
+    # Single dataset training (original behavior)
+    train_single_department(args.dataset, args.peft_output_dir, args)
+
+
+def train_single_department(dataset_path, output_dir, args):
+    """Train LoRA for a single dataset"""
+    
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
@@ -101,7 +181,7 @@ def main():
     load_kwargs = {}
     if args.dataset_config:
         load_kwargs["name"] = args.dataset_config
-    dataset = load_dataset(args.dataset, **load_kwargs)
+    dataset = load_dataset("json", data_files=str(dataset_path), **load_kwargs)
     if args.train_split not in dataset:
         raise ValueError(f"Split '{args.train_split}' not found in dataset")
     train_dataset = dataset[args.train_split]
@@ -142,10 +222,16 @@ def main():
     model_kwargs = {"trust_remote_code": True}
     if torch_dtype is not None:
         model_kwargs["torch_dtype"] = torch_dtype
-    if args.device_map.lower() != "none":
-        model_kwargs["device_map"] = args.device_map
+    # Don't use device_map for now to avoid accelerate issues
+    # if args.device_map.lower() != "none":
+    #     model_kwargs["device_map"] = args.device_map
     model = AutoModelForCausalLM.from_pretrained(args.base_model, **model_kwargs)
     model.resize_token_embeddings(len(tokenizer))
+    
+    # Move model to GPU if available
+    if torch.cuda.is_available():
+        model = model.to('cuda')
+    
     model.config.use_cache = False
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -163,7 +249,7 @@ def main():
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     training_args = TrainingArguments(
-        output_dir=args.peft_output_dir,
+        output_dir=output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -173,7 +259,7 @@ def main():
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        evaluation_strategy=args.evaluation_strategy,
+        eval_strategy=args.evaluation_strategy,
         eval_steps=args.eval_steps,
         fp16=args.fp16,
         bf16=args.bf16,
@@ -182,6 +268,8 @@ def main():
         seed=args.seed,
         report_to="none",
         gradient_checkpointing=args.gradient_checkpointing,
+        # Explicitly set device to avoid accelerate issues
+        dataloader_pin_memory=False,
     )
 
     trainer = Trainer(
@@ -194,8 +282,8 @@ def main():
     )
 
     trainer.train()
-    trainer.save_model(args.peft_output_dir)
-    tokenizer.save_pretrained(args.peft_output_dir)
+    trainer.save_model(output_dir)
+    tokenizer.save_pretrained(output_dir)
 
 
 if __name__ == "__main__":
