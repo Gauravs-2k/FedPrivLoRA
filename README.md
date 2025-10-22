@@ -216,3 +216,6 @@ Key options:
 - Training: `--num-train-epochs`, `--learning-rate`, `--max-length`
 
 The script saves adapters and tokenizer to `--peft-output-dir`.
+
+
+./env/bin/hf upload Gaurav2k/qwen-dept-lora-it-support qwen_dept_lora_it_support --repo-type model
