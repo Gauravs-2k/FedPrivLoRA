@@ -23,3 +23,5 @@ datasets
 distilabel
 
 python-dotenv
+
+matplotlib

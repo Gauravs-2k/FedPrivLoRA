@@ -195,7 +195,7 @@ If you encounter CUDA out of memory errors, use the GPU memory clearing utility:
 
 ```bash
 # Quick memory clear (recommended)
-python app/model/clear_gpu.py --mode quick
+python app/model/gpu_clean.py
 ```
 
 **Memory Optimization Tips:**
