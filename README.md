@@ -217,5 +217,26 @@ Key options:
 
 The script saves adapters and tokenizer to `--peft-output-dir`.
 
+## Uploading Models to Hugging Face Hub
 
-./env/bin/hf upload Gaurav2k/qwen-dept-lora-it-support qwen_dept_lora_it_support --repo-type model
+After training your LoRA models, you can upload them to Hugging Face Hub for sharing and deployment.
+
+### Authentication
+
+First, log in to Hugging Face:
+
+```bash
+./env/bin/hf auth login
+```
+
+This will prompt for your Hugging Face token (get it from https://huggingface.co/settings/tokens).
+
+### Upload Models
+
+Upload each trained model to a new repository:
+
+```bash
+# Upload Finance model
+./env/bin/hf upload Gaurav2k/qwen-dept-lora-finance qwen_dept_lora_finance --repo-type model
+
+
