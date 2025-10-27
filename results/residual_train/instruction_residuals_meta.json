@@ -1,0 +1,4 @@
+{
+  "samples": 1000,
+  "output": "instruction_residuals.pt"
+}

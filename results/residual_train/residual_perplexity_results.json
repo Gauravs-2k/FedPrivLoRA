@@ -1,0 +1,62 @@
+[
+  {
+    "label": "training",
+    "dataset": "Anthropic/hh-rlhf",
+    "dataset_config": null,
+    "split": "train",
+    "sample_count": 1000,
+    "base_perplexity": 15.052143096923828,
+    "residual_perplexity": 10.275055885314941,
+    "delta": -4.777087211608887,
+    "missing_keys": [],
+    "mismatched_keys": []
+  },
+  {
+    "label": "it_support",
+    "dataset": "Tobi-Bueck/customer-support-tickets",
+    "dataset_config": null,
+    "split": "train",
+    "sample_count": 256,
+    "base_perplexity": 13.471274375915527,
+    "residual_perplexity": 13.686832427978516,
+    "delta": 0.21555805206298828,
+    "missing_keys": [],
+    "mismatched_keys": []
+  },
+  {
+    "label": "finance",
+    "dataset": "sweatSmile/FinanceQA",
+    "dataset_config": null,
+    "split": "train",
+    "sample_count": 256,
+    "base_perplexity": 14.642244338989258,
+    "residual_perplexity": 14.781373977661133,
+    "delta": 0.139129638671875,
+    "missing_keys": [],
+    "mismatched_keys": []
+  },
+  {
+    "label": "hr",
+    "dataset": "syncora/hr-policies-qa-dataset",
+    "dataset_config": null,
+    "split": "train",
+    "sample_count": 256,
+    "base_perplexity": 15.676833152770996,
+    "residual_perplexity": 16.329120635986328,
+    "delta": 0.652287483215332,
+    "missing_keys": [],
+    "mismatched_keys": []
+  },
+  {
+    "label": "engineering",
+    "dataset": "nvidia/OpenCodeInstruct",
+    "dataset_config": null,
+    "split": "train",
+    "sample_count": 256,
+    "base_perplexity": 1.9685420989990234,
+    "residual_perplexity": 1.990112543106079,
+    "delta": 0.021570444107055664,
+    "missing_keys": [],
+    "mismatched_keys": []
+  }
+]

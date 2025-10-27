@@ -1,0 +1,11 @@
+{
+  "base_model": "Qwen/Qwen2-0.5B",
+  "instruct_model": "Qwen/Qwen2-0.5B-Instruct",
+  "parameters": 290,
+  "missing_count": 0,
+  "mismatched_count": 0,
+  "base_vocab": 151646,
+  "instruct_vocab": 151646,
+  "embedding_skipped": true,
+  "output": "/home/espresso/work/DML/DML-project/instruction_residuals.pt"
+}

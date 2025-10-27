@@ -1,0 +1,37 @@
+[
+    {
+        "dataset": "Anthropic/hh-rlhf",
+        "link": "https://huggingface.co/datasets/Anthropic/hh-rlhf",
+        "description": "A dataset containing human feedback for training language models, used in reinforcement learning from human feedback (RLHF) tasks.",
+        "language": "English",
+        "size": "10,000 examples"
+    },
+    {
+        "dataset": "Tobi-Bueck/customer-support-tickets",
+        "link": "https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets",
+        "description": "A dataset of customer support tickets for training models in customer service applications.",
+        "language": "English",
+        "size": "5,000 examples"
+    },
+    {
+        "dataset": "nvidia/OpenCodeInstruct",
+        "link": "https://huggingface.co/datasets/nvidia/OpenCodeInstruct",
+        "description": "A large dataset for code instruction tuning, containing programming tasks and solutions.",
+        "language": "English",
+        "size": "5,000,000 examples"
+    },
+    {
+        "dataset": "sweatSmile/FinanceQA",
+        "link": "https://huggingface.co/datasets/sweatSmile/FinanceQA",
+        "description": "A dataset of financial question-answer pairs extracted from company annual reports and financial statements.",
+        "language": "English",
+        "size": "4,000 examples"
+    },
+    {
+        "dataset": "syncora/hr-policies-qa-dataset",
+        "link": "https://huggingface.co/datasets/syncora/hr-policies-qa-dataset",
+        "description": "A dataset containing HR policies and question-answer pairs for training models in human resources applications.",
+        "language": "English",
+        "size": "644 examples"
+    }
+]
