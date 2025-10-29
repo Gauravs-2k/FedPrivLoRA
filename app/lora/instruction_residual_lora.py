@@ -127,41 +127,39 @@ DEPARTMENT_DATASETS = {
 
 
 def _tokenize_dataset(dataset, tokenizer, text_field, template, response_field, response_separator, max_length, num_proc):
-    def formatter(example):
-        if text_field not in example or response_field not in example:
-            raise ValueError(f"Missing fields: {text_field}, {response_field}")
-        
-        prompt = example[text_field]
-        response = example[response_field]
-        
-        prompt_tokens = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
-        input_ids = prompt_tokens + [tokenizer.eos_token_id] + response_tokens + [tokenizer.eos_token_id]
-        
-        # Truncate
-        if len(input_ids) > max_length:
-            input_ids = input_ids[:max_length]
-        
-        labels = ([-100] * (len(prompt_tokens) + 1) + 
-                 response_tokens + [tokenizer.eos_token_id])
-        
-        if len(labels) > max_length:
-            labels = labels[:max_length]
-        
-        attention_mask = [1] * len(input_ids)
-        
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels
-        }
-    
-    return dataset.map(
-        formatter,
-        batched=False,
-        remove_columns=dataset.column_names,
-        num_proc=num_proc,
-    )
+	def formatter(example):
+		if text_field not in example or response_field not in example:
+			raise ValueError(f"Missing fields: {text_field}, {response_field}")
+
+		prompt = example[text_field]
+		response = example[response_field]
+
+		prompt_tokens = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+		response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+		input_ids = prompt_tokens + [tokenizer.eos_token_id] + response_tokens + [tokenizer.eos_token_id]
+
+		if len(input_ids) > max_length:
+			input_ids = input_ids[:max_length]
+
+		labels = ([-100] * (len(prompt_tokens) + 1) + response_tokens + [tokenizer.eos_token_id])
+
+		if len(labels) > max_length:
+			labels = labels[:max_length]
+
+		attention_mask = [1] * len(input_ids)
+
+		return {
+			"input_ids": input_ids,
+			"attention_mask": attention_mask,
+			"labels": labels,
+		}
+
+	return dataset.map(
+		formatter,
+		batched=False,
+		remove_columns=dataset.column_names,
+		num_proc=num_proc,
+	)
 
 
 
@@ -323,15 +321,15 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 
 def main():
 	base_model = "Qwen/Qwen2-0.5B"
-	dataset_path = "it_support"
+	dataset_path = "engineering"
 	text_field = "text"
 	response_field = "response"
 	response_separator = "\n### Response:\n"
-	peft_output_dir = "qwen_dept_lora_instruction"
-	num_train_epochs = 3
+	peft_output_dir = "qwen_dept_lora_instruction_engineering"
+	num_train_epochs = 2
 	per_device_train_batch_size = 2
 	gradient_accumulation_steps = 8
-	learning_rate = 5e-5
+	learning_rate = 3e-5
 	lora_r = 16
 	lora_alpha = 32
 	max_length = 512
@@ -339,7 +337,7 @@ def main():
 	fp16 = True
 	bf16 = False
 	warmup_steps = 50
-	weight_decay = 0.01
+	weight_decay = 0.001
 	instruction_residual_path = None
 	instruction_residual_repo = "Gaurav2k/qwen2-0.5b-instruction-residuals"
 	instruction_residual_filename = "qwen2-0.5b-instruction-residuals.pt"
@@ -378,7 +376,7 @@ def main():
 			self.bf16 = bf16
 			self.gradient_checkpointing = gradient_checkpointing
 			self.seed = 42
-			self.max_train_samples = None
+			self.max_train_samples = 3000
 			self.max_eval_samples = None
 			self.num_proc = None
 			self.dataset_config = None
@@ -386,7 +384,7 @@ def main():
 			self.instruction_residual_repo = instruction_residual_repo
 			self.instruction_residual_filename = instruction_residual_filename
 			self.hf_token = settings.HF_TOKEN
-			self.preprocess = None
+			self.preprocess = DEPARTMENT_DATASETS["engineering"].get("preprocess")
 
 	config = Args()
 	residual_state = load_instruction_residual(

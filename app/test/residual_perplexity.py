@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
@@ -56,6 +57,24 @@ def apply_residual(model, residual_state):
 				continue
 			source.add_(delta.to(device=source.device, dtype=source.dtype))
 	return missing, mismatched
+
+
+def load_residual_state(path: str | None, repo_id: str | None, filename: str, token: str | None):
+	if path:
+		resolved = Path(path)
+		if resolved.is_file():
+			return torch.load(resolved, map_location="cpu")
+		if resolved.is_dir():
+			candidate = resolved / filename
+			if candidate.is_file():
+				return torch.load(candidate, map_location="cpu")
+	if not repo_id:
+		raise FileNotFoundError("Residual source not provided")
+	download_kwargs = {"repo_id": repo_id, "filename": filename, "repo_type": "model"}
+	if token:
+		download_kwargs["token"] = token
+	artifact = hf_hub_download(**download_kwargs)
+	return torch.load(Path(artifact), map_location="cpu")
 
 
 def load_dataset_samples(spec, token: str | None):
@@ -177,22 +196,23 @@ def build_dataset_specs():
 def main():
 	base_config = SimpleNamespace(
 		residual=str(Path(__file__).resolve().parents[2] / "instruction_residuals.pt"),
+		residual_repo="Gaurav2k/qwen2-0.5b-instruction-residuals",
+		residual_filename="qwen2-0.5b-instruction-residuals.pt",
 		base_model="Qwen/Qwen2-0.5B",
 		dtype="float32",
 		device_map="auto",
 		max_length=512,
 		stride=512,
-		output="residual_perplexity_results.json",
+		output=str(Path(__file__).resolve().parents[2] / "results" / "residual_perplexity_results.json"),
 	)
-	residual_path = Path(base_config.residual)
-	if not residual_path.exists():
-		raise FileNotFoundError(f"Residual file not found at {residual_path}")
-	residual_state = torch.load(residual_path, map_location="cpu")
+	token = settings.HF_TOKEN
+	residual_state = load_residual_state(base_config.residual, base_config.residual_repo, base_config.residual_filename, token)
 	results = []
 	for spec in build_dataset_specs():
 		result = run_evaluation(base_config, spec, residual_state)
 		results.append(result)
 	output_path = Path(base_config.output)
+	output_path.parent.mkdir(parents=True, exist_ok=True)
 	output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 	print(json.dumps(results, indent=2))
 	print(f"Saved results to {output_path}")
