@@ -1,0 +1,19 @@
+{
+  "base_model": {
+    "finance": 33.467281341552734,
+    "hr": 30.007055282592773,
+    "it_support": 40.39607238769531,
+    "engineering": 33.44828796386719
+  },
+  "lora_models": {
+    "it_support": {
+      "finance": 30.235576629638672,
+      "hr": 27.940866470336914,
+      "it_support": 35.88431167602539,
+      "engineering": 31.788803100585938
+    }
+  },
+  "accuracy": {
+    "it_support": 1.0
+  }
+}

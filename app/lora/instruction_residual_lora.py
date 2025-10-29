@@ -1,5 +1,3 @@
-import argparse
-import gc
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -7,14 +5,15 @@ from typing import Optional
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
 from transformers import (
 	AutoModelForCausalLM,
 	AutoTokenizer,
-	DataCollatorForLanguageModeling,
 	Trainer,
 	TrainingArguments,
 )
+from transformers import DataCollatorForSeq2Seq
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
@@ -97,73 +96,91 @@ DEPARTMENT_DATASETS = {
 		"preprocess": _prepare_it_support,
 		"text_field": "prompt",
 		"response_field": "response",
-		"prompt_template": "{prompt}",
 		"train_split": "train",
-		"max_train_samples": 1000,
+		"max_train_samples": 10000,
 	},
 	"finance": {
 		"dataset": "sweatSmile/FinanceQA",
 		"preprocess": _prepare_finance,
 		"text_field": "prompt",
 		"response_field": "response",
-		"prompt_template": "{prompt}",
 		"train_split": "train",
-		"max_train_samples": 1000,
+		"max_train_samples": 10000,
 	},
 	"hr": {
 		"dataset": "syncora/hr-policies-qa-dataset",
 		"preprocess": _prepare_hr,
 		"text_field": "prompt",
 		"response_field": "response",
-		"prompt_template": "{prompt}",
 		"train_split": "train",
-		"max_train_samples": 1000,
+		"max_train_samples": 10000,
 	},
 	"engineering": {
 		"dataset": "nvidia/OpenCodeInstruct",
 		"preprocess": _prepare_engineering,
 		"text_field": "prompt",
 		"response_field": "response",
-		"prompt_template": "{prompt}",
 		"train_split": "train",
-		"max_train_samples": 1000,
+		"max_train_samples": 10000,
 	},
 }
 
 
 def _tokenize_dataset(dataset, tokenizer, text_field, template, response_field, response_separator, max_length, num_proc):
-	def formatter(example):
-		if text_field not in example:
-			raise ValueError(f"Field '{text_field}' not found in example")
-		formatted = template.format(**example)
-		if response_field:
-			if response_field not in example:
-				raise ValueError(f"Field '{response_field}' not found in example")
-			formatted += response_separator + example[response_field]
-		tokenized = tokenizer(
-			formatted,
-			truncation=True,
-			max_length=max_length,
-			return_attention_mask=True,
-		)
-		return tokenized
+    def formatter(example):
+        if text_field not in example or response_field not in example:
+            raise ValueError(f"Missing fields: {text_field}, {response_field}")
+        
+        prompt = example[text_field]
+        response = example[response_field]
+        
+        prompt_tokens = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+        input_ids = prompt_tokens + [tokenizer.eos_token_id] + response_tokens + [tokenizer.eos_token_id]
+        
+        # Truncate
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+        
+        labels = ([-100] * (len(prompt_tokens) + 1) + 
+                 response_tokens + [tokenizer.eos_token_id])
+        
+        if len(labels) > max_length:
+            labels = labels[:max_length]
+        
+        attention_mask = [1] * len(input_ids)
+        
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels
+        }
+    
+    return dataset.map(
+        formatter,
+        batched=False,
+        remove_columns=dataset.column_names,
+        num_proc=num_proc,
+    )
 
-	mapped = dataset.map(
-		formatter,
-		batched=False,
-		remove_columns=dataset.column_names,
-		num_proc=num_proc,
-	)
-	return mapped
 
 
-def load_instruction_residual(path: Optional[str]):
-	if not path:
+def load_instruction_residual(path: Optional[str], repo_id: Optional[str], filename: str, token: Optional[str]):
+	if path:
+		resolved = Path(path)
+		if resolved.is_file():
+			return torch.load(resolved, map_location="cpu")
+		if resolved.is_dir():
+			local_candidate = resolved / filename
+			if local_candidate.is_file():
+				return torch.load(local_candidate, map_location="cpu")
+	if not repo_id:
 		return None
-	resolved = Path(path)
-	if not resolved.is_file():
-		raise FileNotFoundError(f"Instruction residuals not found at {resolved}")
-	return torch.load(resolved, map_location="cpu")
+	download_kwargs = {"repo_id": repo_id, "filename": filename, "repo_type": "model"}
+	if token:
+		download_kwargs["token"] = token
+	downloaded = hf_hub_download(**download_kwargs)
+	return torch.load(Path(downloaded), map_location="cpu")
 
 
 def apply_instruction_residual(model, residual_state):
@@ -184,7 +201,8 @@ def apply_instruction_residual(model, residual_state):
 def train_single_department(dataset_path, output_dir, args, residual_state):
 	tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
 	if tokenizer.pad_token is None:
-		tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
+		tokenizer.pad_token = tokenizer.eos_token
+		tokenizer.pad_token_id = tokenizer.eos_token_id
 
 	load_kwargs = {}
 	if args.dataset_config:
@@ -213,9 +231,9 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 		train_dataset,
 		tokenizer,
 		args.text_field,
-		args.prompt_template,
+		None,
 		args.response_field,
-		args.response_separator,
+		None,
 		args.max_length,
 		args.num_proc,
 	)
@@ -224,9 +242,9 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 			eval_dataset,
 			tokenizer,
 			args.text_field,
-			args.prompt_template,
+			None,
 			args.response_field,
-			args.response_separator,
+			None,
 			args.max_length,
 			args.num_proc,
 		)
@@ -241,7 +259,6 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 	if torch_dtype is not None:
 		model_kwargs["torch_dtype"] = torch_dtype
 	model = AutoModelForCausalLM.from_pretrained(args.base_model, **model_kwargs)
-	model.resize_token_embeddings(len(tokenizer))
 	apply_instruction_residual(model, residual_state)
 
 	if torch.cuda.is_available():
@@ -252,6 +269,8 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 		model.gradient_checkpointing_enable()
 
 	lora_targets = _parse_list(args.lora_target_modules)
+	if not lora_targets:
+		lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
 	lora_config = LoraConfig(
 		r=args.lora_r,
 		lora_alpha=args.lora_alpha,
@@ -261,8 +280,9 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 		target_modules=lora_targets,
 	)
 	model = get_peft_model(model, lora_config)
+	model.print_trainable_parameters()
 
-	data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+	data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model, padding=True)
 	training_args = TrainingArguments(
 		output_dir=output_dir,
 		per_device_train_batch_size=args.per_device_train_batch_size,
@@ -274,7 +294,7 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 		warmup_steps=args.warmup_steps,
 		logging_steps=args.logging_steps,
 		save_steps=args.save_steps,
-		evaluation_strategy=args.evaluation_strategy,
+		eval_strategy=args.evaluation_strategy,
 		eval_steps=args.eval_steps,
 		fp16=args.fp16,
 		bf16=args.bf16,
@@ -302,102 +322,79 @@ def train_single_department(dataset_path, output_dir, args, residual_state):
 
 
 def main():
-	base_model = "Qwen/Qwen1.5-1.8B"
+	base_model = "Qwen/Qwen2-0.5B"
 	dataset_path = "it_support"
 	text_field = "text"
 	response_field = "response"
 	response_separator = "\n### Response:\n"
 	peft_output_dir = "qwen_dept_lora_instruction"
-	num_train_epochs = 1
-	per_device_train_batch_size = 1
+	num_train_epochs = 3
+	per_device_train_batch_size = 2
 	gradient_accumulation_steps = 8
-	learning_rate = 2e-4
-	lora_r = 8
-	lora_alpha = 16
-	max_length = 256
+	learning_rate = 5e-5
+	lora_r = 16
+	lora_alpha = 32
+	max_length = 512
 	gradient_checkpointing = True
 	fp16 = True
 	bf16 = False
-	instruction_residual_path = ROOT_DIR / "instruction_residuals.pt"
-
-	parser = argparse.ArgumentParser()
-	parser.add_argument("--device-map", default="auto")
-	parser.add_argument("--dtype", default="auto")
-	parser.add_argument("--lora-target-modules")
-	parser.add_argument("--seed", type=int, default=42)
-	parser.add_argument("--max-train-samples", type=int)
-	parser.add_argument("--max-eval-samples", type=int)
-	parser.add_argument("--num-proc", type=int)
-	parser.add_argument("--dataset")
-	parser.add_argument("--peft-output-dir")
-	parser.add_argument("--base-model")
-	parser.add_argument("--instruction-residual-path")
-	parser.add_argument("--num-train-epochs", type=float)
-	parser.add_argument("--per-device-train-batch-size", type=int)
-	parser.add_argument("--per-device-eval-batch-size", type=int)
-	parser.add_argument("--gradient-accumulation-steps", type=int)
-	parser.add_argument("--learning-rate", type=float)
-	parser.add_argument("--lora-r", type=int)
-	parser.add_argument("--lora-alpha", type=int)
-	parser.add_argument("--lora-dropout", type=float)
-	parser.add_argument("--max-length", type=int)
-	parser.add_argument("--logging-steps", type=int)
-	parser.add_argument("--warmup-steps", type=int)
-	parser.add_argument("--save-steps", type=int)
-	parser.add_argument("--eval-steps", type=int)
-	parser.add_argument("--evaluation-strategy")
-	parser.add_argument("--fp16")
-	parser.add_argument("--bf16")
-	parser.add_argument("--gradient-checkpointing")
-	parser.add_argument("--train-split")
-	parser.add_argument("--eval-split")
-	parser.add_argument("--dataset-config")
-	args = parser.parse_args()
+	warmup_steps = 50
+	weight_decay = 0.01
+	instruction_residual_path = None
+	instruction_residual_repo = "Gaurav2k/qwen2-0.5b-instruction-residuals"
+	instruction_residual_filename = "qwen2-0.5b-instruction-residuals.pt"
 
 	class Args:
 		def __init__(self):
-			self.base_model = args.base_model or base_model
-			self.dataset = args.dataset or dataset_path
+			self.base_model = base_model
+			self.dataset = dataset_path
 			self.text_field = text_field
 			self.response_field = response_field
 			self.prompt_template = "{text}"
 			self.response_separator = response_separator
-			self.peft_output_dir = args.peft_output_dir or peft_output_dir
-			self.train_split = args.train_split or "train"
-			self.eval_split = args.eval_split
-			self.max_length = args.max_length or max_length
-			self.per_device_train_batch_size = args.per_device_train_batch_size or per_device_train_batch_size
-			self.per_device_eval_batch_size = args.per_device_eval_batch_size or 1
-			self.gradient_accumulation_steps = args.gradient_accumulation_steps or gradient_accumulation_steps
-			self.learning_rate = args.learning_rate or learning_rate
-			self.weight_decay = 0.0
-			self.num_train_epochs = args.num_train_epochs or num_train_epochs
-			self.warmup_steps = args.warmup_steps or 100
-			self.logging_steps = args.logging_steps or 10
-			self.save_steps = args.save_steps or 500
-			self.eval_steps = args.eval_steps or 500
-			self.evaluation_strategy = args.evaluation_strategy or "no"
-			self.lora_r = args.lora_r or lora_r
-			self.lora_alpha = args.lora_alpha or lora_alpha
-			self.lora_dropout = args.lora_dropout or 0.05
+			self.peft_output_dir = peft_output_dir
+			self.train_split = "train"
+			self.eval_split = None
+			self.max_length = max_length
+			self.per_device_train_batch_size = per_device_train_batch_size
+			self.per_device_eval_batch_size = 1
+			self.gradient_accumulation_steps = gradient_accumulation_steps
+			self.learning_rate = learning_rate
+			self.weight_decay = weight_decay
+			self.num_train_epochs = num_train_epochs
+			self.warmup_steps = warmup_steps
+			self.logging_steps = 10
+			self.save_steps = 500
+			self.eval_steps = 500
+			self.evaluation_strategy = "no"
+			self.lora_r = lora_r
+			self.lora_alpha = lora_alpha
+			self.lora_dropout = 0.05
 			self.lora_bias = "none"
-			self.lora_target_modules = args.lora_target_modules
-			self.device_map = args.device_map
-			self.dtype = args.dtype
-			self.fp16 = _parse_bool(args.fp16, fp16)
-			self.bf16 = _parse_bool(args.bf16, bf16)
-			self.gradient_checkpointing = _parse_bool(args.gradient_checkpointing, gradient_checkpointing)
-			self.seed = args.seed
-			self.max_train_samples = args.max_train_samples
-			self.max_eval_samples = args.max_eval_samples
-			self.num_proc = args.num_proc
-			self.dataset_config = args.dataset_config
-			self.instruction_residual_path = args.instruction_residual_path or str(instruction_residual_path)
+			self.lora_target_modules = None
+			self.device_map = "auto"
+			self.dtype = "auto"
+			self.fp16 = fp16
+			self.bf16 = bf16
+			self.gradient_checkpointing = gradient_checkpointing
+			self.seed = 42
+			self.max_train_samples = None
+			self.max_eval_samples = None
+			self.num_proc = None
+			self.dataset_config = None
+			self.instruction_residual_path = str(instruction_residual_path) if instruction_residual_path else None
+			self.instruction_residual_repo = instruction_residual_repo
+			self.instruction_residual_filename = instruction_residual_filename
 			self.hf_token = settings.HF_TOKEN
 			self.preprocess = None
 
 	config = Args()
-	residual_state = load_instruction_residual(config.instruction_residual_path)
+	residual_state = load_instruction_residual(
+		config.instruction_residual_path,
+		config.instruction_residual_repo,
+		config.instruction_residual_filename,
+		config.hf_token,
+	)
 
 	selected_dataset = config.dataset.lower()
 	if selected_dataset in DEPARTMENT_DATASETS:
