@@ -7,6 +7,13 @@
         "size": "10,000 examples"
     },
     {
+        "dataset": "lmsys/lmsys-chat-1m",
+        "link": "https://huggingface.co/datasets/lmsys/lmsys-chat-1m",
+        "description": "A large-scale dataset of 1 million chat conversations for training and evaluating conversational AI models.",
+        "language": "English",
+        "size": "1,000,000 examples"
+    },
+    {
         "dataset": "Tobi-Bueck/customer-support-tickets",
         "link": "https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets",
         "description": "A dataset of customer support tickets for training models in customer service applications.",
