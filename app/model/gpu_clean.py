@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from inference import _MODEL_CACHE, _TOKENIZER_CACHE
+from inference import _MODEL_ENTRIES
 
 
 def _safe_call(target: Any, *args: Any) -> None:
@@ -31,10 +31,12 @@ def _release_model(model: Any) -> None:
 
 
 def cleanup_loaded_models() -> None:
-	for key in list(_MODEL_CACHE.keys()):
-		model = _MODEL_CACHE.pop(key, None)
-		_release_model(model)
-	_TOKENIZER_CACHE.clear()
+	for key in list(_MODEL_ENTRIES.keys()):
+		entry = _MODEL_ENTRIES.pop(key, None)
+		if entry is None:
+			continue
+		_release_model(entry.model)
+		entry.tokenizers.clear()
 	gc.collect()
 	if torch.cuda.is_available():
 		try:

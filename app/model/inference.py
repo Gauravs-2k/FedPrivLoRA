@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
@@ -38,8 +39,16 @@ SERVER_DEFAULTS = {
     "max_new_tokens": 128,
 }
 
-_MODEL_CACHE = {}
-_TOKENIZER_CACHE = {}
+
+@dataclass
+class ModelEntry:
+    model: torch.nn.Module
+    tokenizers: Dict[str, AutoTokenizer]
+    loaded_adapters: set
+    active_adapter: Optional[str]
+
+
+_MODEL_ENTRIES: Dict[tuple, ModelEntry] = {}
 
 
 class GenerateRequest(BaseModel):
@@ -95,14 +104,12 @@ def _load_model(base_model: str, peft_dir: str, dtype: str, device_map: str, tok
     model = base_model_instance
 
     if use_peft:
-        # Use provided tokenizer or load one
         if tokenizer is None:
             tokenizer = _load_tokenizer(base_model, peft_dir)
-        # Resize model embeddings to match tokenizer if needed
         model.resize_token_embeddings(len(tokenizer))
-
+        adapter_name = Path(peft_dir).name
         try:
-            model = PeftModel.from_pretrained(base_model_instance, peft_dir)
+            model = PeftModel.from_pretrained(base_model_instance, peft_dir, adapter_name=adapter_name, is_trainable=False)
         except (OSError, ValueError) as e:
             print(f"Warning: Failed to load PeftModel: {e}. Using base model only.")
             model = base_model_instance
@@ -122,21 +129,62 @@ def _load_tokenizer(base_model: str, peft_dir: str):
     return AutoTokenizer.from_pretrained(tokenizer_source, **tokenizer_kwargs)
 
 
-def _cache_key(base_model: str, peft_dir: str, dtype: str, device_map: str):
-    return (base_model, peft_dir or "", dtype or "auto", device_map or "auto")
+def _cache_key(base_model: str, dtype: str, device_map: str):
+    return (base_model, dtype or "auto", device_map or "auto")
 
 
 def _get_model_and_tokenizer(base_model: str, peft_dir: str, dtype: str, device_map: str):
-    key = _cache_key(base_model, peft_dir, dtype, device_map)
-    if key not in _MODEL_CACHE:
-        # Load tokenizer first
+    key = _cache_key(base_model, dtype, device_map)
+    adapter_name = Path(peft_dir).name if peft_dir else "__base__"
+    entry = _MODEL_ENTRIES.get(key)
+    if entry is None:
         tokenizer = _load_tokenizer(base_model, peft_dir)
-        _TOKENIZER_CACHE[key] = tokenizer
-
-        # Load model and resize if needed for PeftModel
         model = _load_model(base_model, peft_dir, dtype, device_map, tokenizer)
-        _MODEL_CACHE[key] = model
-    return _MODEL_CACHE[key], _TOKENIZER_CACHE[key]
+        loaded_adapters = set()
+        active_adapter: Optional[str] = None
+        if peft_dir and isinstance(model, PeftModel):
+            loaded_adapters.add(adapter_name)
+            active_adapter = adapter_name
+        entry = ModelEntry(model=model.eval(), tokenizers={adapter_name: tokenizer}, loaded_adapters=loaded_adapters, active_adapter=active_adapter)
+        _MODEL_ENTRIES[key] = entry
+        return entry.model, tokenizer
+    tokenizer = entry.tokenizers.get(adapter_name)
+    if tokenizer is None:
+        tokenizer = _load_tokenizer(base_model, peft_dir)
+        entry.tokenizers[adapter_name] = tokenizer
+    if peft_dir:
+        if adapter_name not in entry.loaded_adapters:
+            if isinstance(entry.model, PeftModel):
+                entry.model.load_adapter(peft_dir, adapter_name=adapter_name, is_trainable=False)
+            else:
+                entry.model = PeftModel.from_pretrained(entry.model, peft_dir, adapter_name=adapter_name, is_trainable=False)
+            entry.loaded_adapters.add(adapter_name)
+        if isinstance(entry.model, PeftModel):
+            entry.model.set_adapter(adapter_name)
+        entry.active_adapter = adapter_name
+    else:
+        if isinstance(entry.model, PeftModel):
+            disable_adapter = getattr(entry.model, "disable_adapter", None)
+            if callable(disable_adapter):
+                disable_adapter()
+        entry.active_adapter = None
+    entry.model.eval()
+    if tokenizer is not None and hasattr(entry.model, "resize_token_embeddings"):
+        entry.model.resize_token_embeddings(len(tokenizer))
+    return entry.model, tokenizer
+
+
+def reset_cache_for(peft_dir: Optional[str] = None) -> None:
+    if not peft_dir:
+        _MODEL_ENTRIES.clear()
+        return
+    adapter_name = Path(peft_dir).name
+    for key in list(_MODEL_ENTRIES.keys()):
+        entry = _MODEL_ENTRIES.get(key)
+        if entry is None:
+            continue
+        if adapter_name in entry.loaded_adapters or adapter_name == "":
+            _MODEL_ENTRIES.pop(key, None)
 
 
 def _conversation_to_prompt(messages: List[ChatMessage], tokenizer: AutoTokenizer) -> str:
