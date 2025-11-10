@@ -279,8 +279,25 @@ def simulate_sequential_training(
     department_states: Dict[str, List[np.ndarray]] = {
         dept: clone_numpy_state(initial_state) for dept in departments
     }
+    a_indices = [index for index, param_name in enumerate(names) if "lora_A" in param_name]
     adapter_root = Path("results") / "adapters"
     adapter_root.mkdir(parents=True, exist_ok=True)
+
+    def average_selected(
+        items: Sequence[tuple[Sequence[np.ndarray], int]],
+        indices: Sequence[int],
+    ) -> List[np.ndarray]:
+        if not items or not indices:
+            return []
+        total_weight = float(sum(weight for _, weight in items))
+        if total_weight <= 0.0:
+            return [np.array(items[0][0][index], copy=True) for index in indices]
+        accumulators = [np.zeros_like(items[0][0][index], dtype=np.float32) for index in indices]
+        for arrays, weight in items:
+            fraction = float(weight) / total_weight
+            for position, index in enumerate(indices):
+                accumulators[position] += arrays[index].astype(np.float32, copy=False) * fraction
+        return accumulators
     for round_index in range(1, rounds + 1):
         round_weights: List[tuple[str, int]] = []
         for department in departments:
@@ -318,15 +335,20 @@ def simulate_sequential_training(
             aggregated_inputs = [
                 (department_states[dept], weight) for dept, weight in round_weights
             ]
-            global_state = average_ndarrays(aggregated_inputs)
-            if global_mixing > 0.0 and len(round_weights) > 1:
-                mix = float(global_mixing)
-                for department, _ in round_weights:
-                    mixed: List[np.ndarray] = []
-                    for local_arr, global_arr in zip(department_states[department], global_state):
-                        blended = (1.0 - mix) * local_arr + mix * global_arr
-                        mixed.append(blended.astype(np.float32, copy=False))
-                    department_states[department] = mixed
+            aggregated_a = average_selected(aggregated_inputs, a_indices)
+            for department, _ in round_weights:
+                state = department_states[department]
+                if aggregated_a:
+                    if global_mixing > 0.0 and len(round_weights) > 1:
+                        mix = float(global_mixing)
+                        for position, index in enumerate(a_indices):
+                            local_arr = state[index]
+                            blended = (1.0 - mix) * local_arr + mix * aggregated_a[position]
+                            state[index] = blended.astype(np.float32, copy=False)
+                    else:
+                        for position, index in enumerate(a_indices):
+                            state[index] = np.array(aggregated_a[position], copy=True)
+                department_states[department] = state
             for department in departments:
                 export_lora_adapter(
                     base_model,
