@@ -438,8 +438,21 @@ if __name__ == "__main__":
         )
 
 # Example:
-# PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 \
-# python -m app/federation/department_client.py \
+# PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 -m app.federation.department_client \
+#   --personal-root app/dataset/personal_clients \
+#   --rounds 3 \
+#   --global-mix 0.2 \
+#   --max-records 128 \
+#   --max-seq-length 256 \
+#   --learning-rate 0.0002 \
+#   --local-epochs 1 \
+#   --batch-size 1 \
+#   --device-map auto \
+#   --num-clusters 3
+
+
+# mac command:
+    # python3 -m app.federation.department_client \
 #   --personal-root app/dataset/personal_clients \
 #   --rounds 3 \
 #   --global-mix 0.2 \
