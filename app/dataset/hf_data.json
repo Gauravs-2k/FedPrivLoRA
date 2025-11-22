@@ -35,10 +35,10 @@
         "size": "4,000 examples"
     },
     {
-        "dataset": "syncora/hr-policies-qa-dataset",
-        "link": "https://huggingface.co/datasets/syncora/hr-policies-qa-dataset",
+        "dataset": "xwjzds/extractive_qa_question_answering_hr",
+        "link": "https://huggingface.co/datasets/xwjzds/extractive_qa_question_answering_hr",
         "description": "A dataset containing HR policies and question-answer pairs for training models in human resources applications.",
         "language": "English",
-        "size": "644 examples"
+        "size": "5980 examples"
     }
 ]

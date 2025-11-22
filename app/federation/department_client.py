@@ -28,6 +28,7 @@ from app.federation.lora_utils import (
     collect_lora_state,
     create_lora_model,
     export_lora_adapter,
+    load_adapter_model,
     lora_state_to_ndarrays,
     ndarrays_to_lora_state,
 )
@@ -38,12 +39,42 @@ DEFAULT_BATCH_SIZE = 1
 DEFAULT_LOCAL_EPOCHS = 1
 DEFAULT_LEARNING_RATE = 2e-4
 DEFAULT_MAX_RECORDS = 128
+DEFAULT_CLIENTS_PER_DEPARTMENT = 10
 
 
 def _format_training_example(record: Dict[str, object]) -> str:
     user = str(record.get("user", ""))
     assistant = str(record.get("assistant", ""))
     return f"<user>{user}</user>\n<assistant>{assistant}</assistant>"
+
+
+def _discover_client_paths(
+    department: str,
+    limit: int,
+    dataset_map: Optional[Mapping[str, Path]] = None,
+) -> List[Path]:
+    custom_entry: Optional[Path] = None
+    if dataset_map and department in dataset_map:
+        custom_entry = Path(dataset_map[department])
+
+    if custom_entry is not None:
+        if custom_entry.is_dir():
+            candidates = sorted(custom_entry.glob("*.jsonl"))
+        else:
+            candidates = [custom_entry]
+    else:
+        root = Path("app/dataset") / f"{department}_personal_clients"
+        candidates = sorted(root.glob("*.jsonl")) if root.exists() else []
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No client data files found for department '{department}'. "
+            "Provide dataset_map entries or ensure personal client JSONL files exist."
+        )
+
+    if limit > 0:
+        return candidates[:limit]
+    return candidates
 
 
 class DepartmentLoraClient(fl.client.NumPyClient):
@@ -97,13 +128,16 @@ class DepartmentLoraClient(fl.client.NumPyClient):
                 target_modules=target_modules,
                 dtype=dtype,
                 device_map=device_map,
-            )
+            ) 
 
-        if device_map.lower() == "cpu":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.model.to(self.device)
+        param_device = next(self.model.parameters()).device
+        if param_device.type in {"meta", "cpu"} and torch.cuda.is_available():
+            self.model.to("cuda")
+            self.device = torch.device("cuda")
+        elif param_device.type != "meta":
+            self.device = param_device
         else:
-            self.device = next(self.model.parameters()).device
+            self.device = torch.device("cpu")
 
         self.tokenizer.model_max_length = max_seq_length
         self.lora_parameter_names = collect_lora_parameter_names(self.model)
@@ -235,7 +269,12 @@ class DepartmentLoraClient(fl.client.NumPyClient):
     def _load_records(self) -> List[Dict[str, object]]:
         if self.data_path:
             return self._load_jsonl_records(self.data_path)
-        return load_chat_records(self.department, self.max_records)
+        dept_dir = Path("app/dataset") / f"{self.department}_personal_clients"
+        records = []
+        if dept_dir.exists():
+            for jsonl_file in dept_dir.glob("*.jsonl"):
+                records.extend(self._load_jsonl_records(jsonl_file))
+        return records[:self.max_records]
 
     def _load_jsonl_records(self, path: Path) -> List[Dict[str, object]]:
         records: List[Dict[str, object]] = []
@@ -279,6 +318,7 @@ def simulate_sequential_training(
     global_mixing: float = 0.1,
     dataset_map: Optional[Mapping[str, Path]] = None,
     num_clusters: int = 2,
+    clients_per_department: int = DEFAULT_CLIENTS_PER_DEPARTMENT,
 ) -> None:
     shared_model, shared_tokenizer = create_lora_model(
         base_model,
@@ -292,9 +332,32 @@ def simulate_sequential_training(
     names = collect_lora_parameter_names(shared_model)
     initial_state = lora_state_to_ndarrays(collect_lora_state(shared_model, names), names)
 
-    department_states: Dict[str, List[np.ndarray]] = {
-        dept: clone_numpy_state(initial_state) for dept in departments
-    }
+    # Load department-specific adapters
+    adapters = {}
+    adapter_file = Path("app/lora/lora_adapter.json")
+    if adapter_file.exists():
+        with adapter_file.open("r", encoding="utf-8") as f:
+            adapters = json.load(f)
+
+    department_states: Dict[str, List[np.ndarray]] = {}
+    for dept in departments:
+        adapter_model = adapters.get(dept)
+        if adapter_model:
+            model, _ = load_adapter_model(
+                adapter_model,
+                base_model=base_model,
+                r=r,
+                alpha=alpha,
+                dropout=dropout,
+                target_modules=target_modules,
+                dtype=dtype,
+                device_map="cpu",
+            )
+            state = collect_lora_state(model, names)
+            arrays = lora_state_to_ndarrays(state, names)
+            department_states[dept] = arrays
+        else:
+            department_states[dept] = clone_numpy_state(initial_state)
 
     # Indices for LoRA A matrices only (where we apply clustering/mixing)
     a_indices = [index for index, param_name in enumerate(names) if "lora_A" in param_name]
@@ -302,47 +365,60 @@ def simulate_sequential_training(
     adapter_root = Path("results") / "adapters"
     adapter_root.mkdir(parents=True, exist_ok=True)
 
+    department_client_paths: Dict[str, List[Path]] = {}
+    for dept in departments:
+        department_client_paths[dept] = _discover_client_paths(
+            dept,
+            clients_per_department,
+            dataset_map,
+        )
+
     for round_index in range(1, rounds + 1):
-        round_weights: List[tuple[str, int]] = []
-
         for department in departments:
-            params = clone_numpy_state(department_states[department])
-            client = DepartmentLoraClient(
-                department=department,
-                base_model=base_model,
-                r=r,
-                alpha=alpha,
-                dropout=dropout,
-                target_modules=target_modules,
-                dtype=dtype,
-                device_map=device_map,
-                batch_size=batch_size,
-                local_epochs=local_epochs,
-                learning_rate=learning_rate,
-                max_records=max_records,
-                max_seq_length=max_seq_length,
-                export_dir=Path("results") / "client_exports" / department,
-                model=shared_model,
-                tokenizer=shared_tokenizer,
-                data_path=dataset_map.get(department) if dataset_map else None,
-            )
-            arrays, num_examples, _ = client.fit(
-                params,
-                {
-                    "round": round_index,
-                    "local_epochs": local_epochs,
-                    "learning_rate": learning_rate,
-                },
-            )
-            department_states[department] = clone_numpy_state(arrays)
-            round_weights.append((department, num_examples if num_examples > 0 else 1))
+            client_paths = department_client_paths.get(department, [])
+            if not client_paths:
+                continue
 
-        if round_weights:
-            aggregated_inputs = [
-                (department_states[dept], weight) for dept, weight in round_weights
-            ]
-            aggregated_per_item, _cluster_labels = cluster_aware_average_selected(
-                aggregated_inputs,
+            client_states: List[List[np.ndarray]] = []
+            client_weights: List[int] = []
+
+            for client_path in client_paths:
+                params = clone_numpy_state(department_states[department])
+                client = DepartmentLoraClient(
+                    department=department,
+                    base_model=base_model,
+                    r=r,
+                    alpha=alpha,
+                    dropout=dropout,
+                    target_modules=target_modules,
+                    dtype=dtype,
+                    device_map=device_map,
+                    batch_size=batch_size,
+                    local_epochs=local_epochs,
+                    learning_rate=learning_rate,
+                    max_records=max_records,
+                    max_seq_length=max_seq_length,
+                    export_dir=Path("results") / "client_exports" / department,
+                    model=shared_model,
+                    tokenizer=shared_tokenizer,
+                    data_path=client_path,
+                )
+                arrays, num_examples, _ = client.fit(
+                    params,
+                    {
+                        "round": round_index,
+                        "local_epochs": local_epochs,
+                        "learning_rate": learning_rate,
+                    },
+                )
+                client_states.append(clone_numpy_state(arrays))
+                client_weights.append(num_examples if num_examples > 0 else 1)
+
+            if not client_states:
+                continue
+
+            aggregated_per_item, _ = cluster_aware_average_selected(
+                list(zip(client_states, client_weights)),
                 a_indices,
                 num_clusters=num_clusters,
                 max_dim=4096,
@@ -350,11 +426,12 @@ def simulate_sequential_training(
                 random_state=round_index,
             )
 
-            # Mix cluster-level LoRA-A back into each department
-            for (department, _), agg_a in zip(round_weights, aggregated_per_item):
-                state = department_states[department]
-                if agg_a:
-                    if global_mixing > 0.0 and len(round_weights) > 1:
+            if aggregated_per_item:
+                for idx, agg_a in enumerate(aggregated_per_item):
+                    if not agg_a:
+                        continue
+                    state = client_states[idx]
+                    if global_mixing > 0.0 and len(client_states) > 1:
                         mix = float(global_mixing)
                         for position, index in enumerate(a_indices):
                             local_arr = state[index]
@@ -363,22 +440,24 @@ def simulate_sequential_training(
                     else:
                         for position, index in enumerate(a_indices):
                             state[index] = np.array(agg_a[position], copy=True)
-                department_states[department] = state
+                    client_states[idx] = state
 
-            # Export personalized adapters (per department, post-cluster sharing)
-            for department in departments:
-                export_lora_adapter(
-                    base_model,
-                    names,
-                    department_states[department],
-                    adapter_root / department,
-                    r=r,
-                    alpha=alpha,
-                    dropout=dropout,
-                    target_modules=target_modules,
-                    dtype=dtype,
-                    device_map=device_map,
-                )
+            department_states[department] = average_ndarrays(
+                list(zip(client_states, client_weights))
+            )
+
+            export_lora_adapter(
+                base_model,
+                names,
+                department_states[department],
+                adapter_root / department,
+                r=r,
+                alpha=alpha,
+                dropout=dropout,
+                target_modules=target_modules,
+                dtype=dtype,
+                device_map=device_map,
+            )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -399,56 +478,33 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--personal-root", type=Path)
     parser.add_argument("--num-clusters", type=int, default=2)
+    parser.add_argument("--clients-per-dept", type=int, default=DEFAULT_CLIENTS_PER_DEPARTMENT)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-    dataset_map: Optional[Dict[str, Path]] = None
-    participants: Optional[List[str]] = None
-
-    if args.personal_root:
-        root = Path(args.personal_root)
-        files = sorted(root.glob("*.jsonl"))
-        if files:
-            participants = [path.stem for path in files]
-            dataset_map = {path.stem: path for path in files}
-
-    if participants is None and args.simulate:
-        participants = list(args.simulate)
-
-    if participants:
-        simulate_sequential_training(
-            participants,
-            args.rounds,
-            global_mixing=args.global_mix,
-            learning_rate=args.learning_rate,
-            local_epochs=args.local_epochs,
-            max_records=args.max_records,
-            max_seq_length=args.max_seq_length,
-            base_model=args.base_model,
-            device_map=args.device_map,
-            dtype=args.dtype,
-            r=args.lora_r,
-            alpha=args.lora_alpha,
-            dropout=args.lora_dropout,
-            batch_size=args.batch_size,
-            dataset_map=dataset_map,
-            num_clusters=args.num_clusters,
-        )
+    participants = ["engineering", "finance", "customer_support", "hr"]
+    simulate_sequential_training(
+        participants,
+        rounds=3,
+        global_mixing=0.1,
+        learning_rate=2e-4,
+        local_epochs=1,
+        max_records=128,
+        max_seq_length=256,
+        base_model="Qwen/Qwen1.5-1.8B-Chat",
+        device_map="cpu",
+        dtype="float16",
+        r=8,
+        alpha=16,
+        dropout=0.1,
+        batch_size=1,
+        num_clusters=2,
+        clients_per_department=10,
+    )
 
 # Example:
-# PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 -m app.federation.department_client \
-#   --personal-root app/dataset/personal_clients \
-#   --rounds 3 \
-#   --global-mix 0.2 \
-#   --max-records 128 \
-#   --max-seq-length 256 \
-#   --learning-rate 0.0002 \
-#   --local-epochs 1 \
-#   --batch-size 1 \
-#   --device-map auto \
-#   --num-clusters 3
+# source env/bin/activate && CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python app/federation/department_client.py --rounds 1 --clients-per-dept 10
 
 
 # mac command:

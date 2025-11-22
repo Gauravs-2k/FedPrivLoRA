@@ -219,3 +219,6 @@ def main():
 
 if __name__ == "__main__":
 	main()
+
+
+# source env/bin/activate && PYTHONPATH=$PWD python app/test/perplexity.py --base-model Qwen/Qwen1.5-1.8B-Chat --dtype float16 --device-map auto --max-samples 50 --max-length 512 --stride 512 --output-json results/perplexity_benchmark_results.json --heatmap results/perplexity_heatmap.png --accuracy-plot results/perplexity_accuracy.png

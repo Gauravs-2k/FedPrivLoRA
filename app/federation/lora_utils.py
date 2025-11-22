@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from app.model.inference import parse_dtype
@@ -13,7 +13,7 @@ DEFAULT_BASE_MODEL = "Qwen/Qwen1.5-1.8B-Chat"
 DEFAULT_LORA_R = 8
 DEFAULT_LORA_ALPHA = 16
 DEFAULT_LORA_DROPOUT = 0.05
-DEFAULT_LORA_TARGET_MODULES: Optional[Sequence[str]] = None
+DEFAULT_LORA_TARGET_MODULES: Optional[Sequence[str]] = ["q_proj", "v_proj"]
 DEFAULT_DTYPE = "auto"
 DEFAULT_DEVICE_MAP = "cpu"
 
@@ -56,6 +56,40 @@ def create_lora_model(
     return peft_model, tokenizer
 
 
+def _resolve_state_tensor(full_state: Dict[str, torch.Tensor], name: str) -> torch.Tensor:
+    if name in full_state:
+        return full_state[name]
+    suffix = name.split("base_model.", 1)[-1]
+    for key, tensor in full_state.items():
+        if key.endswith(suffix):
+            return tensor
+    raise KeyError(name)
+
+
+def load_adapter_model(
+    adapter_model: str,
+    base_model: str = DEFAULT_BASE_MODEL,
+    r: int = DEFAULT_LORA_R,
+    alpha: int = DEFAULT_LORA_ALPHA,
+    dropout: float = DEFAULT_LORA_DROPOUT,
+    *,
+    target_modules: Optional[Sequence[str]] = DEFAULT_LORA_TARGET_MODULES,
+    dtype: str = DEFAULT_DTYPE,
+    device_map: str = DEFAULT_DEVICE_MAP,
+) -> Tuple[torch.nn.Module, AutoTokenizer]:
+    model, tokenizer = create_lora_model(
+        base_model,
+        r,
+        alpha,
+        dropout,
+        target_modules=target_modules,
+        dtype=dtype,
+        device_map=device_map,
+    )
+    peft_model = PeftModel.from_pretrained(model, adapter_model)
+    return peft_model, tokenizer
+
+
 def collect_lora_parameter_names(model: torch.nn.Module) -> List[str]:
     return [name for name, param in model.named_parameters() if param.requires_grad]
 
@@ -64,7 +98,8 @@ def collect_lora_state(model: torch.nn.Module, names: Sequence[str]) -> OrderedD
     state = OrderedDict()
     full_state = model.state_dict()
     for name in names:
-        state[name] = full_state[name].detach().clone()
+        tensor = _resolve_state_tensor(full_state, name)
+        state[name] = tensor.detach().clone()
     return state
 
 
