@@ -9,18 +9,48 @@ from datasets import load_dataset
 from app.utils.config import settings
 
 
+def _get_text(example: Dict[str, object], key: str) -> str:
+    variants = [key, key.lower(), key.upper(), key.title()]
+    seen: set[str] = set()
+    for variant in variants:
+        if variant in seen:
+            continue
+        seen.add(variant)
+        value = example.get(variant)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     base_dir = Path(__file__).resolve().parent
+    parser.add_argument("--department", default="engineering")
     parser.add_argument("--personal-data", type=Path, default=base_dir / "personalised_data.json")
-    parser.add_argument("--output", type=Path, default=base_dir / "edge_lora_engineering.jsonl")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--personal-output-dir", type=Path)
     parser.add_argument("--personal-limit", type=int)
-    parser.add_argument("--engineering-limit", type=int, default=1000)
+    parser.add_argument("--hf-dataset", default="nvidia/OpenCodeInstruct")
+    parser.add_argument("--hf-split", default="train")
+    parser.add_argument("--hf-limit", type=int, default=1000)
     parser.add_argument("--shuffle-seed", type=int, default=42)
     parser.add_argument("--hf-token")
-    parser.add_argument("--personal-output-dir", type=Path)
-    parser.add_argument("--per-client-engineering-limit", type=int, default=0)
-    return parser.parse_args()
+    parser.add_argument("--per-client-hf-limit", type=int, default=0)
+    parser.add_argument("--engineering-limit", type=int)
+    parser.add_argument("--per-client-engineering-limit", type=int)
+    args = parser.parse_args()
+    slug = args.department.lower().replace(" ", "_")
+    if args.output is None:
+        args.output = base_dir / f"edge_lora_{slug}.jsonl"
+    if args.personal_output_dir is None and args.per_client_hf_limit:
+        args.personal_output_dir = base_dir / f"{slug}_personal_clients"
+    if args.engineering_limit is not None:
+        args.hf_limit = args.engineering_limit
+    if args.per_client_engineering_limit is not None:
+        args.per_client_hf_limit = args.per_client_engineering_limit
+    return args
 
 
 def load_personal_pairs(path: Path) -> Tuple[List[Dict[str, str]], Dict[str, List[Dict[str, str]]]]:
@@ -58,12 +88,28 @@ def load_personal_pairs(path: Path) -> Tuple[List[Dict[str, str]], Dict[str, Lis
 
 
 def extract_prompt(example: Dict[str, object]) -> str:
-    for key in ("input", "prompt", "instruction"):
-        value = example.get(key)
-        if isinstance(value, str):
-            value = value.strip()
-            if value:
-                return value
+    primary_keys = (
+        "input",
+        "prompt",
+        "instruction",
+        "question",
+        "query",
+        "text",
+        "title",
+        "subject",
+        "body",
+    )
+    for key in primary_keys:
+        value = _get_text(example, key)
+        if value:
+            if key == "subject":
+                body_text = _get_text(example, "body")
+                if body_text:
+                    value = f"{value}\n\n{body_text}"
+            context = _get_text(example, "context")
+            if context:
+                return f"{value}\n\nContext: {context}"
+            return value
     messages = example.get("messages")
     if isinstance(messages, list):
         parts: List[str] = []
@@ -83,12 +129,10 @@ def extract_prompt(example: Dict[str, object]) -> str:
 
 
 def extract_response(example: Dict[str, object]) -> str:
-    for key in ("output", "response", "completion"):
-        value = example.get(key)
-        if isinstance(value, str):
-            value = value.strip()
-            if value:
-                return value
+    for key in ("output", "response", "completion", "answer", "target", "label"):
+        value = _get_text(example, key)
+        if value:
+            return value
     messages = example.get("messages")
     if isinstance(messages, list):
         for item in messages:
@@ -103,14 +147,14 @@ def extract_response(example: Dict[str, object]) -> str:
     return ""
 
 
-def load_engineering_samples(limit: int, token: Optional[str]) -> List[Dict[str, str]]:
+def load_hf_samples(name: str, split: str, limit: int, token: Optional[str]) -> List[Dict[str, str]]:
     records: List[Dict[str, str]] = []
     if limit <= 0:
         return records
     try:
-        dataset = load_dataset("nvidia/OpenCodeInstruct", split="train", streaming=True, token=token)
+        dataset = load_dataset(name, split=split, streaming=True, token=token)
     except Exception as error:
-        print(f"Failed to load OpenCodeInstruct: {error}")
+        print(f"Failed to load {name}: {error}")
         return records
     for example in dataset:
         if not isinstance(example, dict):
@@ -171,15 +215,15 @@ def write_personal_outputs(
     return counts
 
 
-def assign_engineering_records(
-    engineering: List[Dict[str, str]],
+def assign_auxiliary_records(
+    records: List[Dict[str, str]],
     user_ids: List[str],
     per_client: int,
     seed: int,
 ) -> Dict[str, List[Dict[str, str]]]:
-    if per_client <= 0 or not engineering or not user_ids:
+    if per_client <= 0 or not records or not user_ids:
         return {}
-    pool = engineering.copy()
+    pool = records.copy()
     rnd = random.Random(seed)
     rnd.shuffle(pool)
     assigned: Dict[str, List[Dict[str, str]]] = {}
@@ -202,14 +246,14 @@ def main() -> None:
     if args.personal_limit and args.personal_limit > 0:
         personal_records = personal_records[:args.personal_limit]
     token = args.hf_token or settings.HF_TOKEN
-    engineering_records = load_engineering_samples(args.engineering_limit, token)
-    combined = deduplicate(personal_records + engineering_records)
+    hf_records = load_hf_samples(args.hf_dataset, args.hf_split, args.hf_limit, token)
+    combined = deduplicate(personal_records + hf_records)
     random.Random(args.shuffle_seed).shuffle(combined)
     write_jsonl(args.output, combined)
-    engineering_by_client = assign_engineering_records(
-        engineering_records,
+    hf_by_client = assign_auxiliary_records(
+        hf_records,
         list(personal_by_client.keys()),
-        args.per_client_engineering_limit,
+        args.per_client_hf_limit,
         args.shuffle_seed,
     )
     personal_outputs: Dict[str, int] = {}
@@ -220,20 +264,25 @@ def main() -> None:
             personal_output_dir,
             personal_by_client,
             args.personal_limit,
-            engineering_by_client,
+            hf_by_client,
         )
     summary = {
         "personal_records": len(personal_records),
-        "engineering_records": len(engineering_records),
+        "hf_records": len(hf_records),
         "combined_records": len(combined),
         "output": str(args.output),
+        "department": args.department,
+        "hf_dataset": args.hf_dataset,
     }
     if personal_outputs:
         summary["personal_files"] = personal_outputs
-    if engineering_by_client:
-        summary["per_client_engineering_limit"] = args.per_client_engineering_limit
+    if hf_by_client:
+        summary["per_client_hf_limit"] = args.per_client_hf_limit
     print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
     main()
+
+
+# source env/bin/activate && PYTHONPATH=$PWD python app/dataset/create_edge_lora_data.py --department "finance" --hf-dataset "sweatSmile/FinanceQA" --hf-limit 1000 --per-client-hf-limit 100 --personal-output-dir app/dataset/finance_personal_clients
